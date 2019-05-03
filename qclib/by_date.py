@@ -115,9 +115,10 @@ class Plot(object):
     def initiate(self):
         self.controller.initiation_in_progress = True
         self.plot_content = self.controller.data.plot(self.controller.view.controlls.date_picker.value)
-        self.a = [pc['a'] for pc in self.plot_content]
+        # self.a = [pc['a'] for pc in self.plot_content]
+        self.a = [self.plot_content[k]['a'] for k in self.plot_content]
         self.f = self.a[0].get_figure()
-        self.controller.view.controlls._plot_settings_accordion_update()
+        self.controller.view.controlls._plot_settings_accordion_initiate()
         # self.f, self.a = plt.subplots()
         # self.f.autofmt_xdate()
         #
@@ -126,11 +127,43 @@ class Plot(object):
         # self.plot_active_d1()
         # self.plot_active_d2()
         # self.update_xlim()
-        self.plot_content = self.controller.initiation_in_progress = False
+        self.update_lims_from_db()
+        self.controller.initiation_in_progress = False
         return self.a
 
     def update_axes(self):
-        self.controller.data.plot(self.controller.view.controlls.date_picker.value, ax = self.a)
+        date = pd.to_datetime(self.controller.view.controlls.date_picker.value)
+        self.controller.data.plot(date, ax = self.a)
+        self.update_lims_from_db()
+
+    def update_lims_from_db(self):
+        tbl_name = self.controller.database.tbl_name_plot_settings #  'vis_nsascience_quicklooks_plot_settings'
+        date = self.controller.view.controlls.date_picker.value
+        for k in self.plot_content:
+            # print(k)
+            qu = 'select * from "{}" WHERE plot="{plot}" AND date="{date}"'.format(tbl_name, plot=k, date=date)
+            with sqlite3.connect(self.controller.database.path2db) as db:
+                out = pd.read_sql(qu, db)
+            #     break
+
+            a = self.plot_content[k]['a']
+
+            vmax = None
+            vmin = None
+
+            for idx, row in out.iterrows():
+
+                if row.lim == 'z_max':
+                    vmax = row.value
+                elif row.lim == 'z_min':
+                    vmin = row.value
+                else:
+                    self.controller.send_message('sorry not yet implemented for {}'.format(row.lim))
+
+            for lc in a.zobjects:
+                lc.set_clim(vmin, vmax)
+                pass
+
 
     # def plot_active_d1(self):
     #     # self.controller.data.dataset1.active.data['altitude (from iMet PTU) [km]'].plot(ax = self.a, label = 'altitude (from iMet PTU) [km]')
@@ -228,16 +261,16 @@ class Controlls(object):
             acc.set_title(e, tag_type)
         return acc
 
-    def _plot_settings_axes(self, axes_content):
+    def _plot_settings_axes(self, axes_content, key):
         # vmin = -1e100
         # vmax = 1e100
         a = axes_content['a']
         def on_change(change, set_lim, vmin, vmax):
             if self.controller.initiation_in_progress:
                 return
-            self.tester = change
+            # self.tester = change
             param  = change['owner'].description
-            self.controller.database.set_plot_settings(param, change['new'])
+            self.controller.database.set_plot_settings(key, param, change['new'])
             set_lim(vmin.value, vmax.value)
 
         xlim_min = widgets.FloatText(
@@ -320,36 +353,58 @@ class Controlls(object):
         pc = self.controller.view.plot.plot_content
         self.plot_setting_accordion = widgets.Accordion([])
         if not isinstance(pc, type(None)):
-            self._plot_settings_accordion_update()
+            self._plot_settings_accordion_initiate()
         return self.plot_setting_accordion
 
 
-    def _plot_settings_accordion_update(self):
+    # def _plot_settings_accordion_update(self):
+
+    def _plot_settings_accordion_initiate(self):
         self.controller.initiation_in_progress = True
         pc = self.controller.view.plot.plot_content
         childs = []
-        for axes in pc:
+        self.plot_settings = {}
+        for key in pc:
+            axes = pc[key]
             a = axes['a']
-            vbox, ps = self._plot_settings_axes(axes)
+            vbox, ps = self._plot_settings_axes(axes, key)
             childs.append(vbox)
-            axes['plot_settings'] = ps
+            self.plot_settings[key] = ps
 
-            clim = axes['clim']
-            ps['z'][0].value, ps['z'][1].value = clim
-            # ps['z'][1].value = clim[1]
-            ps['y'][0].value, ps['y'][1].value = a.get_ylim()
+            # axes['plot_settings'] = ps
+            #
+            # clim = axes['clim']
+            # ps['z'][0].value, ps['z'][1].value = clim
+            # # ps['z'][1].value = clim[1]
+            # ps['y'][0].value, ps['y'][1].value = a.get_ylim()
 
 
             # zlim =
     # accor = widgets.Accordion(childs)
         self.plot_setting_accordion.children = childs
-        for e,ch in enumerate(childs):
-            self.plot_setting_accordion.set_title(e,e)
+        for e,ch in enumerate(pc):
+            self.plot_setting_accordion.set_title(e,ch)
 
         self.controller.initiation_in_progress = False
 
     def _date_picker(self):
         dp = widgets.DatePicker()
+
+        def on_statepicker_change(evt):
+            print('picker')
+            new_value = pd.to_datetime(evt['new'])
+            if new_value not in self.controller.data.valid_dates:
+                print('find closest')
+                new_value = self.controller.data.valid_dates[abs(self.controller.data.valid_dates - new_value).argmin()]
+                self.date_picker.value = pd.to_datetime(new_value)
+                return
+            else:
+                if not isinstance(self.controller.view.plot.a, type(None)):
+                    self.controller.view.plot.update_axes()
+
+        dp.observe(on_statepicker_change, names= 'value')
+
+
         self.date_picker = dp
         button_previous = widgets.Button(description='<',
                                          disabled=False,
@@ -366,13 +421,23 @@ class Controlls(object):
                                      )
 
         def on_next(evt):
-            idx = (self.controller.data.valid_dates == self.date_picker.value.date()).argmax()
+            idx = (self.controller.data.valid_dates == pd.to_datetime(self.date_picker.value.date())).argmax()
             new_value = self.controller.data.valid_dates[idx + 1]
             self.date_picker.value = pd.to_datetime(new_value)
-            self.controller.view.plot.update_axes()
+            # self.controller.view.plot.update_axes()
             # self.controller.view.controlls._plot_settings_accordion_update()
 
+        def on_previous(evt):
+            idx = (self.controller.data.valid_dates == pd.to_datetime(self.date_picker.value.date())).argmax()
+            if idx == 0:
+                self.controller.send_message('first available measurement')
+                return
+            new_value = self.controller.data.valid_dates[idx - 1]
+            self.date_picker.value = pd.to_datetime(new_value)
+            # self.controller.view.plot.update_axes()
+
         button_next.on_click(on_next)
+        button_previous.on_click(on_previous)
 
         hbox = widgets.HBox([dp, button_previous, button_next])
         return hbox
@@ -604,7 +669,8 @@ class Database(database.NsaSciDatabase):
         self.path2db = path2db
         self.controller = controller
         self.tbl_name_plot_settings ='{}_plot_settings'.format(db_tb_name_base)
-        pr = """lim TEXT CHECK (lim IN ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")),
+        pr = """plot TEXT,
+                lim TEXT CHECK (lim IN ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")),
                 value FLOAT"""
         self.create_table_if_not_excists(self.tbl_name_plot_settings, pr)
         self.tbl_name_tags = '{}_tags'.format(db_tb_name_base)
@@ -626,9 +692,11 @@ class Database(database.NsaSciDatabase):
                 db.execute(qu)
             self.controller.send_message('createded table: {} '.format(tbl_name))
 
-    def set_plot_settings(self,param, value):
+    def set_plot_settings(self,key, param, value):
         date = self.controller.view.controlls.date_picker.value
-        qu = 'SELECT * FROM {tb_name} WHERE date="{date}" AND lim="{lim}";'.format(tb_name=self.tbl_name_plot_settings, date=date, lim=param)
+        qu = 'SELECT * FROM {tb_name} WHERE plot="{key}" AND date="{date}" AND lim="{lim}";'.format(tb_name=self.tbl_name_plot_settings,
+                                                                                                    key = key,
+                                                                                                    date=date, lim=param)
         with sqlite3.connect(self.path2db) as db:
             out = db.execute(qu).fetchall()
         if len(out) > 1:
@@ -637,7 +705,8 @@ class Database(database.NsaSciDatabase):
         elif len(out) == 1:
             qu = """UPDATE {tb_name} 
             SET value = {value}
-            WHERE date="{date}" AND lim="{lim}";""".format(tb_name=self.tbl_name_plot_settings,
+            WHERE plot="{key}" AND date="{date}" AND lim="{lim}";""".format(tb_name=self.tbl_name_plot_settings,
+                                                                            key = key,
                                                            value=value, date=date,
                                                            lim=param)
             with sqlite3.connect(self.path2db) as db:
@@ -647,8 +716,9 @@ class Database(database.NsaSciDatabase):
 
         elif len(out) == 0:
             qu = """INSERT 
-            INTO {tb_name} (date, lim, value)
-            VALUES("{date}", "{lim}", {value});""".format(tb_name=self.tbl_name_plot_settings,
+            INTO {tb_name} (date, plot, lim, value)
+            VALUES("{date}", "{key}", "{lim}", {value});""".format(tb_name=self.tbl_name_plot_settings,
+                                                                key = key,
                                                                 date=date,
                                                                 lim=param,
                                                                 value=value)
