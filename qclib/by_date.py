@@ -1,3 +1,12 @@
+"""
+Todo
+-----
+- save notes
+- the date picker still does not work properly
+- save tags
+"""
+
+
 from atmPy.aerosols.instruments import POPS
 # import icarus
 import pathlib
@@ -15,6 +24,7 @@ colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 from nsasci import database
 import sqlite3
 
+from ipywidgets import Layout
 
 
 def read_POPS(path):
@@ -140,7 +150,6 @@ class Plot(object):
         tbl_name = self.controller.database.tbl_name_plot_settings #  'vis_nsascience_quicklooks_plot_settings'
         date = self.controller.view.controlls.date_picker.value
         for k in self.plot_content:
-            # print(k)
             qu = 'select * from "{}" WHERE plot="{plot}" AND date="{date}"'.format(tbl_name, plot=k, date=date)
             with sqlite3.connect(self.controller.database.path2db) as db:
                 out = pd.read_sql(qu, db)
@@ -161,7 +170,9 @@ class Plot(object):
                     self.controller.send_message('sorry not yet implemented for {}'.format(row.lim))
 
             for lc in a.zobjects:
+                lable = a.cax.get_ylabel()
                 lc.set_clim(vmin, vmax)
+                a.cax.set_ylabel(lable)
                 pass
 
 
@@ -272,12 +283,12 @@ class Controlls(object):
             param  = change['owner'].description
             self.controller.database.set_plot_settings(key, param, change['new'])
             set_lim(vmin.value, vmax.value)
-
+        step = 1
         xlim_min = widgets.FloatText(
             value=7.5,
             # min=vmin,
             # max=vmax,
-            step=0.1,
+            step=step,
             description='x_min',
             disabled=False
         )
@@ -286,7 +297,7 @@ class Controlls(object):
             value=7.5,
             # min=vmin,
             # max=vmax,
-            step=0.1,
+            step=step,
             description='x_max',
             disabled=False
         )
@@ -301,7 +312,7 @@ class Controlls(object):
             value=7.5,
             # min=vmin,
             # max=vmax,
-            step=0.1,
+            step=step,
             description='y_min',
             disabled=False
         )
@@ -309,7 +320,7 @@ class Controlls(object):
             value=7.5,
             # min=vmin,
             # max=vmax,
-            step=0.1,
+            step=step,
             description='y_max',
             disabled=False
         )
@@ -323,7 +334,7 @@ class Controlls(object):
             # value=7.5,
             # min=vmin,
             # max=vmax,
-            step=0.1,
+            step=step,
             description='z_min',
             disabled=False
         )
@@ -337,7 +348,7 @@ class Controlls(object):
             # value=7.5,
             # min=vmin,
             # max=vmax,
-            step=0.1,
+            step=step,
             description='z_max',
             disabled=False
         )
@@ -391,16 +402,15 @@ class Controlls(object):
         dp = widgets.DatePicker()
 
         def on_statepicker_change(evt):
-            print('picker')
             new_value = pd.to_datetime(evt['new'])
             if new_value not in self.controller.data.valid_dates:
-                print('find closest')
                 new_value = self.controller.data.valid_dates[abs(self.controller.data.valid_dates - new_value).argmin()]
                 self.date_picker.value = pd.to_datetime(new_value)
                 return
             else:
                 if not isinstance(self.controller.view.plot.a, type(None)):
                     self.controller.view.plot.update_axes()
+                    self._notes_update()
 
         dp.observe(on_statepicker_change, names= 'value')
 
@@ -442,6 +452,25 @@ class Controlls(object):
         hbox = widgets.HBox([dp, button_previous, button_next])
         return hbox
 
+    def _notes(self):
+        def on_change(evt):
+            self.controller.database.set_notes(evt['new'])
+
+        l = Layout(flex = '0 1 auto', height = '340px', min_height = '340px', width = 'auto')
+        texarea = widgets.Textarea(value='',
+                                   placeholder='Type something',
+                                   description='Notes:',
+                                   disabled=False,
+                                   layout = l
+                                   )
+        texarea.observe(on_change, names = 'value')
+        self.notes = texarea
+        return texarea
+
+    def _notes_update(self):
+        notes = self.controller.database.get_notes()
+        self.notes.value = notes
+
     def initiate(self):
         self.controller.initiation_in_progress = True
         datepicker = self._date_picker()
@@ -449,11 +478,18 @@ class Controlls(object):
 
         plot_settings = self._plot_settings()
 
-        accordion = widgets.Accordion(children = (self._tags(),plot_settings,))
+        notes = self._notes()
+        self._notes_update()
+        accordion = widgets.Accordion(children = (self._tags(),plot_settings,notes))
         accordion.set_title(0, 'assign tags')
         accordion.set_title(1, 'plot settings')
+        accordion.set_title(2, 'notes')
 
-        self.messages = widgets.Textarea('\n'.join(self.controller._message), layout={'width': '100%'})
+        l = Layout(flex='0 1 auto', height='240px', min_height='240px', width='auto')
+        self.messages = widgets.Textarea('\n'.join(self.controller._message),
+                                         # layout={'width': '100%'},
+                                         layout = l
+                                         )
 
         vbox = widgets.VBox([datepicker, accordion, self.messages])
         display(vbox)
@@ -673,9 +709,14 @@ class Database(database.NsaSciDatabase):
                 lim TEXT CHECK (lim IN ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")),
                 value FLOAT"""
         self.create_table_if_not_excists(self.tbl_name_plot_settings, pr)
+
         self.tbl_name_tags = '{}_tags'.format(db_tb_name_base)
         pr = "tag TEXT"
         self.create_table_if_not_excists(self.tbl_name_tags, pr)
+
+        pr = "note TEXT"
+        self.tbl_name_notes = '{}_notes'.format(db_tb_name_base)
+        self.create_table_if_not_excists(self.tbl_name_notes, pr)
 
     def create_table_if_not_excists(self,tbl_name, params):
         with sqlite3.connect(self.path2db) as db:
@@ -691,6 +732,56 @@ class Database(database.NsaSciDatabase):
             with sqlite3.connect(self.path2db) as db:
                 db.execute(qu)
             self.controller.send_message('createded table: {} '.format(tbl_name))
+
+    def get_notes(self):
+        date = self.controller.view.controlls.date_picker.value
+        qu = 'SELECT * FROM {tb_name} WHERE date="{date}";'.format(
+            tb_name=self.tbl_name_notes,
+            date=date)
+        with sqlite3.connect(self.path2db) as db:
+            out = pd.read_sql(qu,db)
+
+        if out.shape[0] == 0:
+            note = ''
+        elif out.shape[0] == 1:
+            note = out.note.iloc[0]
+        else:
+            raise ValueError('not possible')
+        return note
+
+    def set_notes(self, value):
+        date = self.controller.view.controlls.date_picker.value
+        qu = 'SELECT * FROM {tb_name} WHERE date="{date}";'.format(
+            tb_name=self.tbl_name_notes,
+            date=date)
+
+        with sqlite3.connect(self.path2db) as db:
+            out = db.execute(qu).fetchall()
+
+        if len(out) > 1:
+            raise ValueError('more then one entry ... not possible')
+        elif len(out) == 1:
+
+            qu = """UPDATE {tb_name}
+            SET note = "{value}"
+            WHERE date="{date}";
+            """.format(tb_name=self.tbl_name_notes, value = value, date=date)
+            with sqlite3.connect(self.path2db) as db:
+                db.execute(qu)
+
+            # self.controller.send_message('note updated')
+
+        elif len(out) == 0:
+            qu = """INSERT
+            INTO {tb_name} (date, note)
+            VALUES("{date}", "{note}");
+            """.format(tb_name = self.tbl_name_notes,
+                       date = date,
+                       note = value)
+            with sqlite3.connect(self.path2db) as db:
+                db.execute(qu)
+
+            # self.controller.send_message('note added')
 
     def set_plot_settings(self,key, param, value):
         date = self.controller.view.controlls.date_picker.value
@@ -712,7 +803,7 @@ class Database(database.NsaSciDatabase):
             with sqlite3.connect(self.path2db) as db:
                 db.execute(qu)
 
-            self.controller.send_message('value updated')
+            # self.controller.send_message('value updated')
 
         elif len(out) == 0:
             qu = """INSERT 
@@ -725,7 +816,7 @@ class Database(database.NsaSciDatabase):
             with sqlite3.connect(self.path2db) as db:
                 db.execute(qu)
 
-            self.controller.send_message('value inserted')
+            # self.controller.send_message('value inserted')
 
     # def add_active_set(self):
     #     imet_active_name = self.controller.data.dataset1.path2active.name
