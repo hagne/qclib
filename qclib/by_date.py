@@ -7,7 +7,7 @@ Todo
 """
 
 
-from atmPy.aerosols.instruments import POPS
+# from atmPy.aerosols.instruments import POPS
 # import icarus
 import pathlib
 
@@ -25,12 +25,13 @@ from nsasci import database
 import sqlite3
 
 from ipywidgets import Layout
+from sys import exc_info
 
 
-def read_POPS(path):
-    hk = POPS.read_housekeeping(path, pattern = 'hk', skip_histogram= True)
-    hk.get_altitude()
-    return hk
+# def read_POPS(path):
+#     hk = POPS.read_housekeeping(path, pattern = 'hk', skip_histogram= True)
+#     hk.get_altitude()
+#     return hk
 
 def read_iMet(path):
     ds = xr.open_dataset(path)
@@ -109,11 +110,11 @@ class View(object):
     def __init__(self, controller):
         self.controller = controller
 
-        self.plot = Plot(self)
-        self.controlls = Controlls(self)
+        self.plot = ViewPlot(self)
+        self.controlls = ViewControlls(self)
 
 # View
-class Plot(object):
+class ViewPlot(object):
     def __init__(self, view):
         self.view = view
         self.controller = view.controller
@@ -128,6 +129,9 @@ class Plot(object):
         # self.a = [pc['a'] for pc in self.plot_content]
         self.a = [self.plot_content[k]['a'] for k in self.plot_content]
         self.f = self.a[0].get_figure()
+        # for at in self.a:
+        #     leg = at.legend()
+        #     leg.remove()
         self.controller.view.controlls._plot_settings_accordion_initiate()
         # self.f, self.a = plt.subplots()
         # self.f.autofmt_xdate()
@@ -138,6 +142,7 @@ class Plot(object):
         # self.plot_active_d2()
         # self.update_xlim()
         self.update_lims_from_db()
+        self.controller.view.controlls._tags_assign_update()
         self.controller.initiation_in_progress = False
         return self.a
 
@@ -227,48 +232,211 @@ class Plot(object):
         # self.a.set_xlim(xmin, xmax)
 
 
-class Controlls(object):
+class ViewControlls(object):
     def __init__(self, view):
         self.view = view
         self.controller = view.controller
 
-    def _tags(self):
-        tags = {'conditions': {'options': ['cloudi', 'clear', 'precip_snow', 'precip_rain']}}
+# todo: tags
+    def _tags_constrain_get_state(self):
+        dd_list = self.tags_constrain_dropdownlist
+        out = [dd_list[0].value] + [[hb.children[0].value, hb.children[1].value] for hb in dd_list[1:]]
+        return out
+
+    def _tags_constrain(self):
+        tag_list = [''] + self.controller.database.get_available_tags()
+
+        op_list = ['and', 'or', 'not']
+        dd_list = []
+
+        def on_change(evt):
+            if evt['name'] == 'value':
+                check_unused()
+                self.controller.selection_from_tags()
+                self.date_picker_dropdown.options = self.controller.valid_dates_selection
+            else:
+                return
+
+        def on_add(evt):
+            op = widgets.Dropdown(
+                options=op_list,
+                value='and',
+                description='',
+                disabled=False, )
+            op.observe(on_change)
+            dd2 = widgets.Dropdown(
+                options=tag_list.copy(),
+                value='',
+                description='',
+                disabled=False,
+            )
+            dd2.observe(on_change)
+
+            hb = widgets.HBox([op, dd2])
+            dd_list.append(hb)
+            vb.children = vb.children[:-1] + (hb,) + (vb.children[-1],)
+
+        def check_unused():
+            dd_list_t = self.tags_constrain_dropdownlist.copy()
+            for e, dd in enumerate(dd_list_t):
+                if e == 0:
+                    continue
+                if dd.children[1].value == '':
+                    dd_list_t.pop(e)
+
+            if len(self.tags_constrain_dropdownlist) != len(dd_list_t):
+                self.tags_constrain_dropdownlist = dd_list_t
+                vb.children = self.tags_constrain_dropdownlist
+
+
+        dd = widgets.Dropdown(
+            options=tag_list.copy(),
+            value='',
+            description='tag:',
+            disabled=False,
+        )
+        dd.observe(on_change)
+        dd_list.append(dd)
+
+        bt_add = widgets.Button(
+            description='add tag',
+            disabled=False,
+            button_style='',  # 'success', 'info', 'warning', 'danger' or ''
+            tooltip='Click me',
+            icon='plus'
+        )
+        bt_add.on_click(on_add)
+
+        vb = widgets.VBox([dd, bt_add])
+        self.tags_constrain_dropdownlist = dd_list
+        return vb
+
+    def _tags_assign_update(self):
+        """updates the state of the checkboxes accoring to whats saved in the db for the particular day"""
+        tags_and_values = self.controller.database.get_tags()
+        tags,values = zip(*tags_and_values)
+        self.controller.tp_tags = tags
+        # tag = out[0]
+        # available_tags = [tag.description for tag in self.tags]
+        for cb in self.tags:
+            tt = cb.description
+            text = [tag for tag in self.tag_values if tag.placeholder == tt][0]
+            if tt in tags:
+                cb.value = True
+                vt = [tag for tag in tags_and_values if tag[0] == tt][0][1]
+                if isinstance(vt, type(None)):
+                    vt = ''
+                else:
+                    vt = '{}'.format(vt)
+                text.value = vt
+            else:
+                cb.value = False
+                text.value = ''
+
+        # for tag in tags:
+        #     cb = [cb for cb in self.tags if cb.description == tag][0]
+        #     cb.value = True
+
+
+    def _tags_assign(self):
+        tags = self.controller.database.get_available_tags()
+        # tag_dict = {'conditions': {'options': ['cloudi', 'clear', 'precip_snow', 'precip_rain']}}
+        tag_dict = {'conditions': {'options': tags}}
+
         def on_add_tag(evt, box, options, new_tag, all_checkboxes):
             if new_tag.value in options:
                 return
             elif new_tag.value.strip() == '':
-                return
+                returnpath2database = path2database
             else:
                 options.append(new_tag.value)
                 newcb = widgets.Checkbox(description=new_tag.value)
+                newcb.observe(on_cb_change, names=['_property_lock'])
                 all_checkboxes.append(newcb)
-                box.children = box.children + (newcb,)
+                box_child_list = list(box.children + (newcb,))
+                box_child_list.sort(key=lambda x: x.description)
+                box.children =box_child_list
+                self.controller.tp_box = box
                 return
+
+        def on_add_tag_new(evt, box, options, all_checkboxes, all_values):
+            if evt.value in options:
+                return
+            elif evt.value.strip() == '':
+                return
+            else:
+                options.append(evt.value)
+                newcb = widgets.Checkbox(description=evt.value, indent = False, value = False)
+                newcb.observe(lambda x: on_cb_change(x, all_checkboxes, all_values), names=['_property_lock'])
+                newtext = widgets.Text(placeholder = evt.value)
+                newtext.on_submit(lambda x: on_cb_change(x, all_checkboxes, all_values))
+                newbox = widgets.HBox([newcb, newtext])
+                all_checkboxes.append(newcb)
+                all_values.append(newtext)
+                box_child_list = list(box.children + (newbox,))
+                # box_child_list.sort(key=lambda x: x.children[0].description)
+                box.children = box_child_list
+                self.controller.tp_box = box
+                return
+
+
+        def on_cb_change(evt, cbs, values):
+            tp = type(evt).__name__
+            if type(evt).__name__ == 'Bunch':
+                cb = evt['owner']
+                tag = cb.description
+                text = [txt for txt in values if txt.placeholder == tag][0]
+                new = evt['new']
+                # not sure why the following was necessary
+                if len(new) != 1:
+                    return
+                cb_value = new['value']
+            elif type(evt).__name__ == 'Text':
+                text = evt
+                tag = evt.placeholder
+                cb = [cb for cb in cbs if cb.description == tag][0]
+                cb_value = cb.value
+
+            # print('{}: {} -> {}'.format(tp, cb , text))
+            # return
+            # print('{}: cb: {}, tx: {}'.format(tag, cb_value, text.value))
+            # return
+            self.controller.send_message('set tag {}:{} ({})'.format(tag, cb_value, text.value))
+            self.controller.database.set_tag(tag, cb_value, text.value)
 
         radio_button_list = []
         all_checkboxes = []
-        for tag_type in tags.keys():
+        all_values = []
+        self.tag_values  = all_values
+        self.tags = all_checkboxes
+
+        #This loop not really used currently ... only one element
+        for tag_type in tag_dict.keys():
             #     rb = widgets.RadioButtons(options = tags[tag_type]['options'])
-            cbs = []
-            for opt in tags[tag_type]['options']:
-                cb = widgets.Checkbox(description=opt)
-                cbs.append(cb)
-                all_checkboxes.append(cb)
-            cb_box = widgets.VBox(cbs)
+
+            cb_box = widgets.VBox() # needs to be defined here since used by new_tag
             # new tag
-            new_tag = widgets.Text(placeholder='Type something')
-            add_button = widgets.Button(description='add tag')
-            add_button.on_click(lambda x: on_add_tag(x, cb_box, tags[tag_type]['options'], new_tag, all_checkboxes))
-            add_box = widgets.HBox([add_button, new_tag])
 
+            new_tag = widgets.Text(placeholder='enter new tag')
+            new_tag.on_submit(lambda x: on_add_tag_new(x, cb_box, tag_dict[tag_type]['options'], all_checkboxes, all_values))
+            add_box = widgets.HBox([new_tag,])
+            cbs = []
+            for opt in tag_dict[tag_type]['options']:
+                cb = widgets.Checkbox(description=opt, indent = False)
+                cb.observe(lambda x: on_cb_change(x, all_checkboxes, all_values), names=['_property_lock'])
+                text = widgets.Text(placeholder = opt)
+                text.on_submit(lambda x: on_cb_change(x, all_checkboxes, all_values))
+                cbs.append(widgets.HBox([cb,text]))
+                all_checkboxes.append(cb)
+                all_values.append(text)
+            # cb_box = widgets.VBox([add_box]+cbs)
+            cb_box.children = [add_box] + cbs
             # box it
-            box = widgets.HBox([cb_box, add_box])
-
-            radio_button_list.append(box)
+            # box = widgets.HBox([cb_box, add_box])
+            radio_button_list.append(cb_box)
 
         acc = widgets.Accordion(radio_button_list)
-        for e, tag_type in enumerate(tags.keys()):
+        for e, tag_type in enumerate(tag_dict.keys()):
             acc.set_title(e, tag_type)
         return acc
 
@@ -403,19 +571,30 @@ class Controlls(object):
 
         def on_statepicker_change(evt):
             new_value = pd.to_datetime(evt['new'])
-            if new_value not in self.controller.data.valid_dates:
-                new_value = self.controller.data.valid_dates[abs(self.controller.data.valid_dates - new_value).argmin()]
+            if new_value not in self.controller.valid_dates_selection:
+                new_value = self.controller.valid_dates_selection[abs(self.controller.valid_dates_selection - new_value).argmin()]
                 self.date_picker.value = pd.to_datetime(new_value)
+                self.date_picker_dropdown.value = pd.to_datetime(new_value)
                 return
             else:
                 if not isinstance(self.controller.view.plot.a, type(None)):
                     self.controller.view.plot.update_axes()
                     self._notes_update()
+                    self._tags_assign_update()
 
         dp.observe(on_statepicker_change, names= 'value')
-
-
         self.date_picker = dp
+        # todo: here
+        def on_change_dd(evt):
+            new = evt['new']
+            self.controller.tp_evt = evt
+            if len(new) == 1:
+                value = evt['owner'].options[new['index']]
+                self.date_picker.value = pd.to_datetime(value)
+
+        dd = widgets.Dropdown(options = self.controller.valid_dates_selection)
+        dd.observe(on_change_dd, names=['_property_lock'])
+        self.date_picker_dropdown = dd
         button_previous = widgets.Button(description='<',
                                          disabled=False,
                                          button_style='',  # 'success', 'info', 'warning', 'danger' or ''
@@ -431,25 +610,32 @@ class Controlls(object):
                                      )
 
         def on_next(evt):
-            idx = (self.controller.data.valid_dates == pd.to_datetime(self.date_picker.value.date())).argmax()
-            new_value = self.controller.data.valid_dates[idx + 1]
+            idx = (self.controller.valid_dates_selection == pd.to_datetime(self.date_picker.value.date())).argmax()
+            try:
+                new_value = self.controller.valid_dates_selection[idx + 1]
+            except IndexError:
+                _,_,traceback = exc_info()
+                self.controller.send_message('last available value (gclib.by_date.py:{})'.format(traceback.tb_lineno))
+                return
             self.date_picker.value = pd.to_datetime(new_value)
+            self.date_picker_dropdown.value = pd.to_datetime(new_value)
             # self.controller.view.plot.update_axes()
             # self.controller.view.controlls._plot_settings_accordion_update()
 
         def on_previous(evt):
-            idx = (self.controller.data.valid_dates == pd.to_datetime(self.date_picker.value.date())).argmax()
+            idx = (self.controller.valid_dates_selection == pd.to_datetime(self.date_picker.value.date())).argmax()
             if idx == 0:
                 self.controller.send_message('first available measurement')
                 return
-            new_value = self.controller.data.valid_dates[idx - 1]
+            new_value = self.controller.valid_dates_selection[idx - 1]
             self.date_picker.value = pd.to_datetime(new_value)
+            self.date_picker_dropdown.value = pd.to_datetime(new_value)
             # self.controller.view.plot.update_axes()
 
         button_next.on_click(on_next)
         button_previous.on_click(on_previous)
 
-        hbox = widgets.HBox([dp, button_previous, button_next])
+        hbox = widgets.HBox([dp, dd, button_previous, button_next])
         return hbox
 
     def _notes(self):
@@ -474,16 +660,19 @@ class Controlls(object):
     def initiate(self):
         self.controller.initiation_in_progress = True
         datepicker = self._date_picker()
-        self.date_picker.value = pd.to_datetime(self.controller.data.valid_dates[0])
+        self.date_picker.value = pd.to_datetime(self.controller.valid_dates_selection[0])
 
         plot_settings = self._plot_settings()
 
         notes = self._notes()
         self._notes_update()
-        accordion = widgets.Accordion(children = (self._tags(),plot_settings,notes))
-        accordion.set_title(0, 'assign tags')
-        accordion.set_title(1, 'plot settings')
-        accordion.set_title(2, 'notes')
+
+        accordion = widgets.Accordion(children = (self._tags_constrain(),self._tags_assign(), plot_settings, notes))
+
+        for e,key in enumerate(['select by tags', 'assign tags', 'plot settings', 'notes']):
+            accordion.set_title(e, key)
+            # accordion.set_title(1, 'plot settings')
+            # accordion.set_title(2, 'notes')
 
         l = Layout(flex='0 1 auto', height='240px', min_height='240px', width='auto')
         self.messages = widgets.Textarea('\n'.join(self.controller._message),
@@ -718,6 +907,7 @@ class Database(database.NsaSciDatabase):
         self.tbl_name_notes = '{}_notes'.format(db_tb_name_base)
         self.create_table_if_not_excists(self.tbl_name_notes, pr)
 
+
     def create_table_if_not_excists(self,tbl_name, params):
         with sqlite3.connect(self.path2db) as db:
             qu = "select name from sqlite_master where type = 'table'"
@@ -782,6 +972,71 @@ class Database(database.NsaSciDatabase):
                 db.execute(qu)
 
             # self.controller.send_message('note added')
+
+# todo: tags
+    def set_tag(self, tag, cb_value, tx_value):
+        """here value == False means deleting the tag"""
+        date = self.controller.view.controlls.date_picker.value
+        qu = 'SELECT * FROM {tb_name} WHERE date="{date}" AND tag="{tag}";'.format(tb_name=self.tbl_name_tags,
+                                                                                   date=date, tag=tag)
+        with sqlite3.connect(self.path2db) as db:
+            out = db.execute(qu).fetchall()
+
+        # no entry ... add row
+        if len(out) == 0 and cb_value == True:
+            qu = """INSERT
+            INTO {tb_name} (date, tag, value)
+            VALUES ("{date}", "{tag}", "{value}");""".format(tb_name=self.tbl_name_tags,
+                                                             date=date,
+                                                             tag=tag,
+                                                             value = tx_value)
+        # entry exists and need to deleted
+        elif len(out) == 1 and cb_value == False:
+            qu = """DELETE FROM {tb_name}
+            WHERE tag="{tag}" AND date="{date}";""".format(tb_name = self.tbl_name_tags, tag = tag, date = date)
+
+        # entry exists ... only value changed
+        elif len(out) == 1 and cb_value == True:
+            qu = """UPDATE {tb_name}
+                    SET value = "{value}"
+                    WHERE tag="{tag}" AND date="{date}";""".format(tb_name=self.tbl_name_tags,
+                                                                   value=tx_value,
+                                                                   tag=tag,
+                                                                   date=date)
+
+        else:
+            raise ValueError('nonono! this should not be happening')
+
+        with sqlite3.connect(self.path2db) as db:
+            self.controller.tp_qu = qu
+            db.execute(qu)
+
+    def get_available_tags(self):
+        tbl_name = self.tbl_name_tags
+        qu = 'SELECT tag from "{}"'.format(tbl_name)
+        with sqlite3.connect(self.path2db) as db:
+            out = db.execute(qu).fetchall()
+
+        out = list(np.unique([tag[0] for tag in out]))
+        out.sort()
+        return out
+
+    def get_tags(self):
+        date = self.controller.view.controlls.date_picker.value
+        qu = 'SELECT tag,value FROM {tb_name} WHERE date="{date}";'.format(tb_name=self.tbl_name_tags,
+                                                                                   date=date)
+        with sqlite3.connect(self.path2db) as db:
+            # out = pd.read_sql(qu,db)
+            out = db.execute(qu).fetchall()
+        out = [i for i in out]
+        return out
+
+    def get_tag_table(self):
+        qu = 'SELECT * from "{}"'.format(self.tbl_name_tags)
+        with sqlite3.connect(self.path2db) as db:
+            #     out = db.execute(qu).fetchall()
+            out = pd.read_sql(qu, db)
+        return out
 
     def set_plot_settings(self,key, param, value):
         date = self.controller.view.controlls.date_picker.value
@@ -928,6 +1183,8 @@ class Controller(object):
         self.initiation_in_progress = False
         self._message = []
         self.data = data #Data_container(self, path2data)
+        self.valid_dates_all = self.data.valid_dates
+        self.valid_dates_selection = self.valid_dates_all
         self.data.send_message = self.send_message
 
         self.view = View(self)
@@ -946,3 +1203,25 @@ class Controller(object):
             self.view.controlls.messages.value = '\n +++++++++++++++\n'.join(mt)
         except AttributeError:
             pass
+
+    def selection_from_tags(self):
+        tag_state = self.view.controlls._tags_constrain_get_state()
+        if tag_state[0] == '':
+            self.valid_dates_selection = self.valid_dates_all
+            return
+        tags = self.database.get_available_tags()
+        tag_table = self.database.get_tag_table()
+        df = pd.DataFrame(columns=tags, index=self.valid_dates_all, dtype=bool)
+        df[:] = False
+        # df
+
+        for e, row in tag_table.iterrows():
+            df.loc[row.date, row.tag] = True
+
+        where = df[tag_state[0]]
+        for tag in tag_state[1:]:
+            if tag[0] == 'and':
+                where = where & df[tag[1]]
+
+        self.valid_dates_selection = df[where].index
+        return self.valid_dates_selection
