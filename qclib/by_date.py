@@ -9,7 +9,7 @@ Todo
 
 # from atmPy.aerosols.instruments import POPS
 # import icarus
-import pathlib
+import pathlib as pl
 
 import numpy as np
 import xarray as xr
@@ -33,16 +33,171 @@ from sys import exc_info
 #     hk.get_altitude()
 #     return hk
 
-def read_iMet(path):
-    ds = xr.open_dataset(path)
-    # return ds
-    alt_gps = ds['GPS altitude [km]'].to_pandas()
-    alt_bar = ds['altitude (from iMet PTU) [km]'].to_pandas()
+# def read_iMet(path):
+#     ds = xr.open_dataset(path)
+#     # return ds
+#     alt_gps = ds['GPS altitude [km]'].to_pandas()
+#     alt_bar = ds['altitude (from iMet PTU) [km]'].to_pandas()
 
-    df = pd.DataFrame({'alt_gps': alt_gps,
-              'alt_bar': alt_bar})
-    return df
+#     df = pd.DataFrame({'alt_gps': alt_gps,
+#               'alt_bar': alt_bar})
+#     return df
 
+class Data(object):
+    def __init__(self, path2datafolder, 
+                 # path2date_function, 
+                 # read_function, 
+                  plot_function, 
+                 # dataset_name = None, 
+                 # axis2ploton = None,
+                 # axis_name = None,
+                 gridspec_kwargs = None,
+                 dropna = True):
+        
+        
+        # self.axis_name = axis_name
+        #### dataset properties
+        ### how to read data
+        # self.read_function = read_function
+        self.gridspec_kwargs = gridspec_kwargs
+        
+        ### path to files
+        if isinstance(path2datafolder, dict):
+            assert(False), 'needs programming ... only nested list right now'
+            zl = path2datafolder.items()
+            dataset_name,path2datafolder = zip(*zl)
+            
+        elif isinstance(path2datafolder, list):
+            dataset_name,path2datafolder, read_function, path2date_function = list(zip(*path2datafolder))
+            # pass
+            # path2datafolder_list = path2datafolder
+            # path2datafolder_list = [item for sublist in path2datafolder for item in sublist]
+
+        else:
+            assert(False), 'needs programming ... only nested list right now'
+            path2datafolder = [path2datafolder,]
+        
+        path2datafolder = [pl.Path(p2fld) for p2fld in path2datafolder]
+        self.path2datafolder = path2datafolder
+        self.dataset_name = dataset_name
+        self.read_function = read_function
+        ### dataset names
+        # if isinstance(dataset_name, type(None)):
+        #     dataset_name = range(len(path2datafolder))
+        # elif isinstance(dataset_name, str):
+        #     dataset_name = [dataset_name,]
+            
+        assert(isinstance(dataset_name, (list, tuple))), f'nenenene, should not be possible ({type(dataset_name)})'
+        self.dataset_name = dataset_name
+        
+        ### how to turn file name into datetime
+        # if not isinstance(path2date_function, list):
+        #     # this assumes the single provided function applies to all datasets
+        #     path2date_function = [path2date_function,] * len(path2datafolder)
+        
+        self.path2date_function = path2date_function
+        
+        ### on which axis to plot
+        # self.axis2ploton = axis2ploton
+        
+        ### bunch into datafram
+        self.dataset_properties =   pd.DataFrame([path2datafolder, 
+                                                  read_function, 
+                                                  path2date_function,
+                                                  # self.axis2ploton,
+                                                  ], 
+                                                 index=['path2data', 'read_func', 'path2date_func',
+                                                        # 'axis2ploton',
+                                                        ], 
+                                                 columns = dataset_name).transpose()
+        
+        # return
+        
+        #### available files
+        file_list = []        
+        for idx, dprow in self.dataset_properties.iterrows():        
+            # p2fld = row.path2data#pl.Path(p2fld)
+            files = pd.Series(dprow.path2data.glob('*.nc'))#, columns=['path2file'])
+            files.index = files.apply(lambda row: dprow.path2date_func(row))
+            files.sort_index(inplace=True)
+            files.name = dprow.name #dataset_name[e]
+            file_list.append(files)
+    
+        files = pd.concat(file_list, axis = 1, )
+        assert(dropna), 'dropna != True is not implemented yet'
+        files.dropna(inplace=True)
+        files.columns.name = 'dataset_name'
+        files.index.name = 'date'
+        
+        #### plot properties
+        assert(isinstance(plot_function, dict)), f'currently plot_function has to be dict, is {type(plot_function)}'
+        zl = plot_function.items()
+        axis_name,plot_function = zip(*zl)
+        self.plot_function = plot_function
+        self.axis_name = axis_name
+        self.plot_properties = pd.DataFrame([self.plot_function,], columns= self.axis_name, index = ['plot_func']).transpose()
+        # reduce to series if only one dataset
+        # if files.shape[1] == 1:
+        #     files = files.loc[:,0]
+        
+        # path2datafolder = pl.Path(path2datafolder)
+        # files = pd.DataFrame(path2datafolder.glob('*.nc'), columns=['path2file'])
+        # files.index = files.apply(lambda row: path2date_function(row.path2file), axis = 1)
+        # files.sort_index(inplace=True)
+        self.files = files
+        self.valid_dates = files.index
+        try:
+            self.active_data = self.read_data()
+        except:
+            print('could not load active dataset')
+    
+    def read_data(self, date = None):
+        if isinstance(date, type(None)):
+            files = self.files.iloc[-1]
+        else:
+            files = self.files.loc[date]
+            
+        data = {dsn: self.dataset_properties.loc[dsn, 'read_func'](p2f) for dsn, p2f in files.items()}
+        return data
+    
+    def plot(self, date = None, ax = None):
+        if isinstance(ax, type(None)):
+            f,aa = plt.subplots(self.plot_properties.shape[0], sharex=True, gridspec_kw=self.gridspec_kwargs)
+            self.plot_properties['axis'] = aa
+        else:
+            if isinstance(ax, list):
+                ax = ax[0]
+            a = ax
+            # f = a.get_figure()
+            a.clear() #to clean up the plo   
+        # return a
+        # if date is not given plot first file 
+    
+        
+        if not isinstance(date, type(None)):
+            path2file = self.files.loc[date]
+            self.active_files = path2file
+            self.active_data = self.read_data(date)
+        
+        out = {}
+        # for axname, grp in self.dataset_properties.groupby('axis2ploton'):
+        
+        #     plot_func = self.plot_properties.loc[axname, 'plot_func']
+        #     at = self.plot_properties.loc[axname, 'axis']
+        #     data = {dsname: self.active_data[dsname] for dsname in grp.index}
+        #     plot_func(data, at)
+        #     at.zobjects = []
+        #     out[axname] = {'a': at}
+        for axname, row in self.plot_properties.iterrows():
+            row.plot_func(self.active_data, row.axis)
+            row.axis.zobjects = []
+            out[axname] = {'a': row.axis}    
+            
+            
+        # self.plot_function(self.active_data, a)
+        
+        # out = {'thisone':{'a':a}}
+        return out
 
 # class old_Data_container(object):
 #     def __init__(self, controller, path2data):
@@ -152,6 +307,8 @@ class ViewPlot(object):
         self.update_lims_from_db()
 
     def update_lims_from_db(self):
+        if not self.controller.database._valid:
+            return
         tbl_name = self.controller.database.tbl_name_plot_settings #  'vis_nsascience_quicklooks_plot_settings'
         date = self.controller.view.controlls.date_picker.value
         for k in self.plot_content:
@@ -313,6 +470,8 @@ class ViewControlls(object):
 
     def _tags_assign_update(self):
         """updates the state of the checkboxes accoring to whats saved in the db for the particular day"""
+        if not self.controller.database._valid:
+            return
         tags_and_values = self.controller.database.get_tags()
         tags,values = zip(*tags_and_values)
         self.controller.tp_tags = tags
@@ -567,7 +726,8 @@ class ViewControlls(object):
         self.controller.initiation_in_progress = False
 
     def _date_picker(self):
-        dp = widgets.DatePicker()
+        layout_width = [40,40,10,10] # percentages of widths of different subwidgets 
+        dp = widgets.DatePicker(layout = widgets.Layout(width=f'{layout_width[0]}%'))
 
         def on_statepicker_change(evt):
             new_value = pd.to_datetime(evt['new'])
@@ -578,6 +738,8 @@ class ViewControlls(object):
                 return
             else:
                 if not isinstance(self.controller.view.plot.a, type(None)):
+                    self.controller.send_message('on_statepicker_change - else')
+                    # self.controller.send_message(new_value)
                     self.controller.view.plot.update_axes()
                     self._notes_update()
                     self._tags_assign_update()
@@ -590,9 +752,10 @@ class ViewControlls(object):
             self.controller.tp_evt = evt
             if len(new) == 1:
                 value = evt['owner'].options[new['index']]
+                self.controller.send_message('on_change_dd')
                 self.date_picker.value = pd.to_datetime(value)
 
-        dd = widgets.Dropdown(options = self.controller.valid_dates_selection)
+        dd = widgets.Dropdown(options = self.controller.valid_dates_selection, layout = widgets.Layout(width=f'{layout_width[1]}%'))
         dd.observe(on_change_dd, names=['_property_lock'])
         self.date_picker_dropdown = dd
         button_previous = widgets.Button(description='<',
@@ -600,6 +763,7 @@ class ViewControlls(object):
                                          button_style='',  # 'success', 'info', 'warning', 'danger' or ''
                                          tooltip='previous date',
                                          #                 icon='>'
+                                         layout = widgets.Layout(width=f'{layout_width[2]}%'),
                                          )
 
         button_next = widgets.Button(description='>',
@@ -607,6 +771,7 @@ class ViewControlls(object):
                                      button_style='',  # 'success', 'info', 'warning', 'danger' or ''
                                      tooltip='next date',
                                      #                 icon='right-arrow'
+                                     layout = widgets.Layout(width=f'{layout_width[3]}%'),
                                      )
 
         def on_next(evt):
@@ -619,7 +784,7 @@ class ViewControlls(object):
                 return
             self.date_picker.value = pd.to_datetime(new_value)
             self.date_picker_dropdown.value = pd.to_datetime(new_value)
-            # self.controller.view.plot.update_axes()
+            self.controller.view.plot.update_axes()
             # self.controller.view.controlls._plot_settings_accordion_update()
 
         def on_previous(evt):
@@ -630,7 +795,7 @@ class ViewControlls(object):
             new_value = self.controller.valid_dates_selection[idx - 1]
             self.date_picker.value = pd.to_datetime(new_value)
             self.date_picker_dropdown.value = pd.to_datetime(new_value)
-            # self.controller.view.plot.update_axes()
+            self.controller.view.plot.update_axes()
 
         button_next.on_click(on_next)
         button_previous.on_click(on_previous)
@@ -665,6 +830,7 @@ class ViewControlls(object):
         plot_settings = self._plot_settings()
 
         notes = self._notes()
+        
         self._notes_update()
 
         accordion = widgets.Accordion(children = (self._tags_constrain(),self._tags_assign(), plot_settings, notes))
@@ -891,21 +1057,26 @@ class ViewControlls(object):
 class Database(database.NsaSciDatabase):
     def __init__(self, controller, path2db, db_tb_name_base):
         # super().__init__(path2db)
-        self.path2db = path2db
         self.controller = controller
-        self.tbl_name_plot_settings ='{}_plot_settings'.format(db_tb_name_base)
-        pr = """plot TEXT,
-                lim TEXT CHECK (lim IN ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")),
-                value FLOAT"""
-        self.create_table_if_not_excists(self.tbl_name_plot_settings, pr)
-
-        self.tbl_name_tags = '{}_tags'.format(db_tb_name_base)
-        pr = "tag TEXT"
-        self.create_table_if_not_excists(self.tbl_name_tags, pr)
-
-        pr = "note TEXT"
-        self.tbl_name_notes = '{}_notes'.format(db_tb_name_base)
-        self.create_table_if_not_excists(self.tbl_name_notes, pr)
+        self.path2db = path2db
+        
+        if isinstance(path2db, type(None)):
+            self._valid = False
+        else:
+            self._valid = True
+            self.tbl_name_plot_settings ='{}_plot_settings'.format(db_tb_name_base)
+            pr = """plot TEXT,
+                    lim TEXT CHECK (lim IN ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")),
+                    value FLOAT"""
+            self.create_table_if_not_excists(self.tbl_name_plot_settings, pr)
+    
+            self.tbl_name_tags = '{}_tags'.format(db_tb_name_base)
+            pr = "tag TEXT"
+            self.create_table_if_not_excists(self.tbl_name_tags, pr)
+    
+            pr = "note TEXT"
+            self.tbl_name_notes = '{}_notes'.format(db_tb_name_base)
+            self.create_table_if_not_excists(self.tbl_name_notes, pr)
 
 
     def create_table_if_not_excists(self,tbl_name, params):
@@ -924,6 +1095,8 @@ class Database(database.NsaSciDatabase):
             self.controller.send_message('createded table: {} '.format(tbl_name))
 
     def get_notes(self):
+        if not self._valid:
+            return ''
         date = self.controller.view.controlls.date_picker.value
         qu = 'SELECT * FROM {tb_name} WHERE date="{date}";'.format(
             tb_name=self.tbl_name_notes,
@@ -1012,6 +1185,8 @@ class Database(database.NsaSciDatabase):
             db.execute(qu)
 
     def get_available_tags(self):
+        if not self._valid:
+            return []
         tbl_name = self.tbl_name_tags
         qu = 'SELECT tag from "{}"'.format(tbl_name)
         with sqlite3.connect(self.path2db) as db:
@@ -1189,7 +1364,10 @@ class Controller(object):
 
         self.view = View(self)
         if isinstance(path2database, type(None)) or isinstance(database_table_name_base, type(None)):
-            raise ValueError('currently neither of path2database or database_table_nme_base can be None')
+            # raise ValueError('currently neither of path2database or database_table_nme_base can be None')
+            # self.database = None
+            pass
+        # else:
         self.database = Database(self, path2database, database_table_name_base)
 
 

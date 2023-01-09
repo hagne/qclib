@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from atmPy.aerosols.instruments import POPS
+# from atmPy.aerosols.instruments import POPS
 # import icarus
 import pathlib
 
