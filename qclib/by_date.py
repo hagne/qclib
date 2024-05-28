@@ -27,6 +27,7 @@ import sqlite3
 from ipywidgets import Layout
 from sys import exc_info
 
+import xarray as _xr
 
 # def read_POPS(path):
 #     hk = POPS.read_housekeeping(path, pattern = 'hk', skip_histogram= True)
@@ -45,14 +46,47 @@ from sys import exc_info
 
 class Data(object):
     def __init__(self, path2datafolder, 
-                 # path2date_function, 
-                 # read_function, 
-                  plot_function, 
-                 # dataset_name = None, 
-                 # axis2ploton = None,
-                 # axis_name = None,
+                 plot_function, 
                  gridspec_kwargs = None,
-                 dropna = True):
+                 dropna = True,
+                 file_read_error = 'raise'):
+        """
+        
+
+        Parameters
+        ----------
+        path2datafolder : nested list
+            [[dataset_name,path2datafolder,read_function, path2date_function],
+             ...
+            ].
+            here:
+                dataset_name: 
+                path2datafolder: ...
+                read_function: function that takes the path2file and returns a xarray ds
+                path2date_function: a function that takes the path2file and returns a date 
+            example:
+            [['aod2','/mnt/telg/data/grad/surfrad/aod1625/0.4/tbl/2021/',read_function_AOD, path2date_function],
+             ...
+            ].
+        plot_function : dict
+            {dataset_name: plot_function,
+             ...
+             }
+            here:
+                dataset_name: has to match the dataset_name from path2datafolder
+                plot_function: function that takes the data_object (e.g. self.active_data) and axis
+        gridspec_kwargs : TYPE, optional
+            DESCRIPTION. The default is None.
+        dropna : TYPE, optional
+            DESCRIPTION. The default is True.
+        file_read_error: str [raise, ignore]
+            What to do if the file fails to open.
+
+        Returns
+        -------
+        None.
+
+        """
         
         
         # self.axis_name = axis_name
@@ -68,7 +102,7 @@ class Data(object):
             dataset_name,path2datafolder = zip(*zl)
             
         elif isinstance(path2datafolder, list):
-            dataset_name,path2datafolder, read_function, path2date_function = list(zip(*path2datafolder))
+            dataset_name,path2datafolder, read_function, path2date_function, glob_pattern = list(zip(*path2datafolder))
             # pass
             # path2datafolder_list = path2datafolder
             # path2datafolder_list = [item for sublist in path2datafolder for item in sublist]
@@ -104,9 +138,10 @@ class Data(object):
         self.dataset_properties =   pd.DataFrame([path2datafolder, 
                                                   read_function, 
                                                   path2date_function,
+                                                  glob_pattern
                                                   # self.axis2ploton,
                                                   ], 
-                                                 index=['path2data', 'read_func', 'path2date_func',
+                                                 index=['path2data', 'read_func', 'path2date_func','glob_pattern',
                                                         # 'axis2ploton',
                                                         ], 
                                                  columns = dataset_name).transpose()
@@ -117,10 +152,12 @@ class Data(object):
         file_list = []        
         for idx, dprow in self.dataset_properties.iterrows():        
             # p2fld = row.path2data#pl.Path(p2fld)
-            files = pd.Series(dprow.path2data.glob('*.nc'))#, columns=['path2file'])
+            files = pd.Series(dprow.path2data.glob(dprow.glob_pattern))#, columns=['path2file'])
             files.index = files.apply(lambda row: dprow.path2date_func(row))
             files.sort_index(inplace=True)
             files.name = dprow.name #dataset_name[e]
+            duplicates = files.index.duplicated().sum()
+            assert(duplicates == 0), f'Dataset {dprow.name} has {duplicates} duplicates. improve glob string pattern?'
             file_list.append(files)
     
         files = pd.concat(file_list, axis = 1, )
@@ -149,7 +186,11 @@ class Data(object):
         try:
             self.active_data = self.read_data()
         except:
-            print('could not load active dataset')
+            if file_read_error == 'ignore':
+                print('could not load active dataset')
+            elif file_read_error == 'raise':
+                raise
+                
     
     def read_data(self, date = None):
         if isinstance(date, type(None)):
@@ -158,6 +199,7 @@ class Data(object):
             files = self.files.loc[date]
             
         data = {dsn: self.dataset_properties.loc[dsn, 'read_func'](p2f) for dsn, p2f in files.items()}
+
         return data
     
     def plot(self, date = None, ax = None):
@@ -166,10 +208,10 @@ class Data(object):
             self.plot_properties['axis'] = aa
         else:
             if isinstance(ax, list):
-                ax = ax[0]
-            a = ax
-            # f = a.get_figure()
-            a.clear() #to clean up the plo   
+                for a in ax:
+                    a.clear()
+            else:
+                ax.clear() #to clean up the plo   
         # return a
         # if date is not given plot first file 
     
@@ -177,6 +219,12 @@ class Data(object):
         if not isinstance(date, type(None)):
             path2file = self.files.loc[date]
             self.active_files = path2file
+            #### TODO: try if we can fix the dying kernel issue if we close all files first, bettwer would it be if we would keep some in a list or so and only close if list is longer than xy
+            for dataset in self.active_data:
+                ds = self.active_data[dataset]
+                if isinstance(ds, _xr.Dataset):
+                    ds.close()
+                
             self.active_data = self.read_data(date)
         
         out = {}
@@ -822,10 +870,10 @@ class ViewControlls(object):
         notes = self.controller.database.get_notes()
         self.notes.value = notes
 
-    def initiate(self):
+    def initiate(self, index = -1):
         self.controller.initiation_in_progress = True
         datepicker = self._date_picker()
-        self.date_picker.value = pd.to_datetime(self.controller.valid_dates_selection[0])
+        self.date_picker.value = pd.to_datetime(self.controller.valid_dates_selection[index])
 
         plot_settings = self._plot_settings()
 
