@@ -21,7 +21,7 @@ from IPython.display import display
 import matplotlib.pylab as plt
 colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
-from nsasci import database
+# from nsasci import database
 import sqlite3
 
 from ipywidgets import Layout
@@ -521,8 +521,12 @@ class ViewControlls(object):
         if not self.controller.database._valid:
             return
         tags_and_values = self.controller.database.get_tags()
-        tags,values = zip(*tags_and_values)
-        self.controller.tp_tags = tags
+        if len(tags_and_values) == 0:
+            tags = []
+            values = []
+        else:
+            tags,values = zip(*tags_and_values)
+        # self.controller.tp_tags = tags
         # tag = out[0]
         # available_tags = [tag.description for tag in self.tags]
         for cb in self.tags:
@@ -779,6 +783,7 @@ class ViewControlls(object):
 
         def on_statepicker_change(evt):
             new_value = pd.to_datetime(evt['new'])
+            print(f'date picker changed to {new_value}')
             if new_value not in self.controller.valid_dates_selection:
                 new_value = self.controller.valid_dates_selection[abs(self.controller.valid_dates_selection - new_value).argmin()]
                 self.date_picker.value = pd.to_datetime(new_value)
@@ -796,11 +801,12 @@ class ViewControlls(object):
         self.date_picker = dp
         # todo: here
         def on_change_dd(evt):
+            print('date changed via dropdown')
             new = evt['new']
             self.controller.tp_evt = evt
             if len(new) == 1:
                 value = evt['owner'].options[new['index']]
-                self.controller.send_message('on_change_dd')
+                # self.controller.send_message('on_change_dd')
                 self.date_picker.value = pd.to_datetime(value)
 
         dd = widgets.Dropdown(options = self.controller.valid_dates_selection, layout = widgets.Layout(width=f'{layout_width[1]}%'))
@@ -823,20 +829,23 @@ class ViewControlls(object):
                                      )
 
         def on_next(evt):
-            idx = (self.controller.valid_dates_selection == pd.to_datetime(self.date_picker.value.date())).argmax()
+            print(f'button next clicked')
+            idx = (self.controller.valid_dates_selection == pd.to_datetime(self.date_picker.value)).argmax()
             try:
                 new_value = self.controller.valid_dates_selection[idx + 1]
             except IndexError:
                 _,_,traceback = exc_info()
                 self.controller.send_message('last available value (gclib.by_date.py:{})'.format(traceback.tb_lineno))
                 return
+            print(f'new value: {new_value}')
             self.date_picker.value = pd.to_datetime(new_value)
             self.date_picker_dropdown.value = pd.to_datetime(new_value)
             self.controller.view.plot.update_axes()
             # self.controller.view.controlls._plot_settings_accordion_update()
 
         def on_previous(evt):
-            idx = (self.controller.valid_dates_selection == pd.to_datetime(self.date_picker.value.date())).argmax()
+            print(f'button previous clicked')
+            idx = (self.controller.valid_dates_selection == pd.to_datetime(self.date_picker.value)).argmax()
             if idx == 0:
                 self.controller.send_message('first available measurement')
                 return
@@ -874,6 +883,7 @@ class ViewControlls(object):
         self.controller.initiation_in_progress = True
         datepicker = self._date_picker()
         self.date_picker.value = pd.to_datetime(self.controller.valid_dates_selection[index])
+        self.date_picker_dropdown.value = pd.to_datetime(self.controller.valid_dates_selection[index])
 
         plot_settings = self._plot_settings()
 
@@ -1102,7 +1112,9 @@ class ViewControlls(object):
                 self.controller.database.unbind_measurements()
             self.update_accordeon()
 
-class Database(database.NsaSciDatabase):
+
+    
+class Database(object):
     def __init__(self, controller, path2db, db_tb_name_base):
         # super().__init__(path2db)
         self.controller = controller
@@ -1112,6 +1124,7 @@ class Database(database.NsaSciDatabase):
             self._valid = False
         else:
             self._valid = True
+            self._ensure_database()
             self.tbl_name_plot_settings ='{}_plot_settings'.format(db_tb_name_base)
             pr = """plot TEXT,
                     lim TEXT CHECK (lim IN ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")),
@@ -1119,13 +1132,21 @@ class Database(database.NsaSciDatabase):
             self.create_table_if_not_excists(self.tbl_name_plot_settings, pr)
     
             self.tbl_name_tags = '{}_tags'.format(db_tb_name_base)
-            pr = "tag TEXT"
+            pr = "tag TEXT, \nvalue TEXT"
             self.create_table_if_not_excists(self.tbl_name_tags, pr)
     
             pr = "note TEXT"
             self.tbl_name_notes = '{}_notes'.format(db_tb_name_base)
             self.create_table_if_not_excists(self.tbl_name_notes, pr)
 
+    def _ensure_database(self):
+        path = pl.Path(self.path2db)
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            with sqlite3.connect(path) as db:
+                db.execute("PRAGMA user_version = 0")
+            self.controller.send_message(f'created database file: {path}')
 
     def create_table_if_not_excists(self,tbl_name, params):
         with sqlite3.connect(self.path2db) as db:
@@ -1138,9 +1159,56 @@ class Database(database.NsaSciDatabase):
              date TEXT,
              {}
             )""".format(tbl_name,params)
+            print(f'creating table: {qu}')
             with sqlite3.connect(self.path2db) as db:
                 db.execute(qu)
             self.controller.send_message('createded table: {} '.format(tbl_name))
+
+    def add_line2db(self, line, table_name, if_exists = 'fail'):
+        """ line is dataframe with same colum names
+           """
+        with sqlite3.connect(self.path2db) as db:
+            idx = line.index[0]
+            idx_label = line.index.name
+            qu = 'SELECT EXISTS(SELECT 1 FROM {} WHERE {}="{}");'.format(table_name, idx_label, idx)
+            exists = db.execute(qu).fetchall()
+
+        if np.any(np.array(exists) == 1):
+            if if_exists == 'fail':
+                raise ValueError('Index {} exists'.format(idx))
+            elif if_exists == 'skip':
+                print('Idx {} exists ... skipping'.format(idx))
+                return False
+            elif if_exists == 'overwrite':
+                raise ValueError('not implemented yet ... maybe its time')
+
+        # create/append table
+        with sqlite3.connect(self.path2db) as db:
+            line.to_sql(table_name, db,
+            #                  if_exists='replace'
+                            if_exists='append'
+                            )
+
+    def add_table2db(self, columns=['fname','date','start', 'end'], table_name = 'imet', index_name = 'idx', if_exists='fail'):
+        """This function will add a table to the database
+        if_exists: str ['fail', 'replace']"""
+        flight_df = pd.DataFrame(columns=columns)
+        if index_name:
+            flight_df.index.name = index_name
+        else:
+            flight_df.index.name = 'idx'
+        tbl_name = table_name
+        with sqlite3.connect(self.path2db) as db:
+            flight_df.to_sql(tbl_name, db,
+                                if_exists=if_exists
+            #                      if_exists='append'
+                                )
+
+    def dump_table(self, tbl_name, index_col = None):
+        qu = 'select * from {}'.format(tbl_name)
+        with sqlite3.connect(self.path2db) as db:
+            df_db = pd.read_sql(qu, db, index_col= index_col)
+        return df_db
 
     def get_notes(self):
         if not self._valid:
@@ -1159,6 +1227,26 @@ class Database(database.NsaSciDatabase):
         else:
             raise ValueError('not possible')
         return note
+
+    def snapshot(self, max_rows=20, include_schema=True):
+        """Return a lightweight representation of the database."""
+        if not self._valid:
+            return {'tables': [], 'schema': {}, 'preview': {}}
+        with sqlite3.connect(self.path2db) as db:
+            tables = [row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
+            schema = {}
+            preview = {}
+            for tbl in tables:
+                if include_schema:
+                    schema_row = db.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                        (tbl,),
+                    ).fetchone()
+                    schema[tbl] = schema_row[0] if schema_row else ''
+                preview[tbl] = pd.read_sql(
+                    f"SELECT * FROM {tbl} LIMIT {int(max_rows)}", db)
+        return {'tables': tables, 'schema': schema, 'preview': preview}
 
     def set_notes(self, value):
         date = self.controller.view.controlls.date_picker.value
@@ -1226,7 +1314,7 @@ class Database(database.NsaSciDatabase):
                                                                    date=date)
 
         else:
-            raise ValueError('nonono! this should not be happening')
+            raise ValueError(f'not possible situation for tag:{tag}, cb_value:{cb_value}, tx_value:{tx_value} for table:{self.tbl_name_tags}. \nQuery: {qu}')
 
         with sqlite3.connect(self.path2db) as db:
             self.controller.tp_qu = qu
@@ -1249,9 +1337,10 @@ class Database(database.NsaSciDatabase):
         qu = 'SELECT tag,value FROM {tb_name} WHERE date="{date}";'.format(tb_name=self.tbl_name_tags,
                                                                                    date=date)
         with sqlite3.connect(self.path2db) as db:
-            # out = pd.read_sql(qu,db)
+            print(f'get_tags query: {qu}', end=' -> ')
             out = db.execute(qu).fetchall()
         out = [i for i in out]
+        print(f'{out}')
         return out
 
     def get_tag_table(self):

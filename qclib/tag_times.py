@@ -689,6 +689,7 @@ class Database(database.NsaSciDatabase):
         # super().__init__(path2db)
         self.controller = controller
         self.path2db = self.controller.paths['path2database']
+        self._ensure_database()
         # self.tbl_name = 'flights'
         self.connection = self.create_connection()
         sql = """ CREATE TABLE IF NOT EXISTS change_points (
@@ -705,6 +706,15 @@ class Database(database.NsaSciDatabase):
             #         comment text
             #     ); """
         self.create_table(sql)
+
+    def _ensure_database(self):
+        path = pathlib.Path(self.path2db)
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            with sqlite3.connect(path) as db:
+                db.execute("PRAGMA user_version = 0")
+            self.controller.send_message(f'created database file: {path}')
     
     def create_connection(self):
         """ create a database connection to the SQLite database
