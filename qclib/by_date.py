@@ -49,7 +49,9 @@ class Data(object):
                  plot_function, 
                  gridspec_kwargs = None,
                  dropna = True,
-                 file_read_error = 'raise'):
+                 file_duplicate_error = 'raise',
+                 file_read_error = 'raise',
+                 verbose = False):
         """
         
 
@@ -88,13 +90,31 @@ class Data(object):
 
         """
         
-        
+        if verbose:
+            print('================================')
+            print("Test if path2date and the load data functions work")
+            dslist = []
+            for p in path2datafolder:
+                print('------')
+                try:
+                    p2f = next(pl.Path(p[1]).glob('*.nc'))
+                except StopIteration:
+                    raise ValueError(f'No .nc files found in {p[1]}. With pl.Path("{p[1]}").glob("*.nc")')
+                print(f'trying to open file at {p2f}', end = ' ... ')
+                ds = p[2](p2f) #load the file
+                dslist.append(ds)
+                print('done')
+                
+                print('path2date_function returns:', end = ' ')
+                dt = p[3](next(pl.Path(p[1]).glob('*.nc'))) #load the file
+                print(dt)  
+            self.tp_test_ds = dslist
         # self.axis_name = axis_name
         #### dataset properties
         ### how to read data
         # self.read_function = read_function
         self.gridspec_kwargs = gridspec_kwargs
-        
+        self.verbose = verbose
         ### path to files
         if isinstance(path2datafolder, dict):
             assert(False), 'needs programming ... only nested list right now'
@@ -147,20 +167,34 @@ class Data(object):
                                                  columns = dataset_name).transpose()
         
         # return
-        
+ 
+
         #### available files
         file_list = []        
         for idx, dprow in self.dataset_properties.iterrows():        
             # p2fld = row.path2data#pl.Path(p2fld)
             files = pd.Series(dprow.path2data.glob(dprow.glob_pattern))#, columns=['path2file'])
-            files.index = files.apply(lambda row: dprow.path2date_func(row))
+            files.index = files.apply(lambda row: pd.to_datetime(dprow.path2date_func(row).date()))
             files.sort_index(inplace=True)
             files.name = dprow.name #dataset_name[e]
             duplicates = files.index.duplicated().sum()
-            assert(duplicates == 0), f'Dataset {dprow.name} has {duplicates} duplicates. improve glob string pattern?'
+            # assert(duplicates == 0), f'Dataset {dprow.name} has {duplicates} duplicates. improve glob string pattern?'
+            if duplicates > 0:
+                if file_duplicate_error == 'raise':
+                    raise ValueError(f'Dataset {dprow.name} has {duplicates} duplicates. Set file_duplicate_error to "ignore" to ignore duplicates and keep first occurence only. This probably happens because there are more than one file per day, improve code here in qclib to merge those files?')
+                elif file_duplicate_error == 'ignore':
+                    files = files[~files.index.duplicated(keep='first')]
+                    print(f'Warning: Dataset {dprow.name} has {duplicates} duplicates. kept first occurence only.')
+            if self.verbose:
+                no_of_files = files.shape[0]
+                print(f'Found {no_of_files} files for folder {dprow.path2data} (dataset: {dprow.name})')
+
             file_list.append(files)
     
         files = pd.concat(file_list, axis = 1, )
+        # self.files = files
+        # self.file_list = file_list
+        # return 
         assert(dropna), 'dropna != True is not implemented yet'
         files.dropna(inplace=True)
         files.columns.name = 'dataset_name'
@@ -181,8 +215,12 @@ class Data(object):
         # files = pd.DataFrame(path2datafolder.glob('*.nc'), columns=['path2file'])
         # files.index = files.apply(lambda row: path2date_function(row.path2file), axis = 1)
         # files.sort_index(inplace=True)
+        assert(files.shape[0] > 0), 'File list failed to build, use verbose mode to see details'
         self.files = files
         self.valid_dates = files.index
+        if verbose:
+            print('================================')
+            print(f'{self.files.shape[0]} valid dates found spanning from {self.files.index.min()} to {self.files.index.max()}')
         try:
             self.active_data = self.read_data()
         except:
@@ -882,6 +920,7 @@ class ViewControlls(object):
     def initiate(self, index = -1):
         self.controller.initiation_in_progress = True
         datepicker = self._date_picker()
+        # print(f'234234: index = {index}')
         self.date_picker.value = pd.to_datetime(self.controller.valid_dates_selection[index])
         self.date_picker_dropdown.value = pd.to_datetime(self.controller.valid_dates_selection[index])
 
@@ -1528,10 +1567,10 @@ class Controller(object):
         tag_table = self.database.get_tag_table()
         df = pd.DataFrame(columns=tags, index=self.valid_dates_all, dtype=bool)
         df[:] = False
-        # df
 
         for e, row in tag_table.iterrows():
-            df.loc[row.date, row.tag] = True
+            if row.date in df.index: # only assign tags for dates in the valid date range, the database might contain more dates
+                df.loc[row.date, row.tag] = True
 
         where = df[tag_state[0]]
         for tag in tag_state[1:]:
